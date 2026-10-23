@@ -771,6 +771,44 @@ $("loginForm").addEventListener("submit", async event => {
     return;
   }
 
+
+
+async function adminLogin() {
+  const email = document.getElementById("adminEmail").value.trim();
+  const password = document.getElementById("adminPassword").value;
+
+  const { data, error } = await db.auth.signInWithPassword({
+    email,
+    password
+  });
+
+  if (error) {
+    alert("Login ไม่สำเร็จ: " + error.message);
+    return;
+  }
+
+  const { data: isAdmin, error: adminError } =
+    await db.rpc("is_admin");
+
+  if (adminError) {
+    alert("ตรวจสอบสิทธิ์ Admin ไม่สำเร็จ: " + adminError.message);
+    return;
+  }
+
+  if (!isAdmin) {
+    alert("บัญชีนี้ไม่มีสิทธิ์ Admin");
+    await db.auth.signOut();
+    return;
+  }
+
+  alert("Login Admin สำเร็จ");
+  // เรียกฟังก์ชันเปิดแผง Admin เดิมของเว็บไซต์ตรงนี้
+}
+
+
+
+
+  
   isAdmin = true;
   $("loginPanel").classList.add("hidden");
   $("adminPanel").classList.remove("hidden");
