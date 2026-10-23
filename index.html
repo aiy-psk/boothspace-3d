@@ -366,5 +366,513 @@ footer {
 <footer>BOOTHSPACE 3D · EXHIBITION BOOTH BOOKING</footer>
 
 <!-- ส่วนที่ 2 จะเพิ่มระบบ 3D และระบบจอง -->
+  
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+<script>
+// ===== ตั้งค่า Supabase =====
+// เปลี่ยน 2 ค่านี้เป็นข้อมูลจาก Supabase Project ของคุณ
+const SUPABASE_URL = "PASTE_YOUR_SUPABASE_PROJECT_URL";
+const SUPABASE_KEY = "PASTE_YOUR_SUPABASE_PUBLISHABLE_KEY";
+
+const connected =
+  SUPABASE_URL.startsWith("https://") &&
+  !SUPABASE_URL.includes("PASTE_") &&
+  SUPABASE_KEY.length > 20 &&
+  !SUPABASE_KEY.includes("PASTE_");
+
+const db = connected
+  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY)
+  : null;
+
+let booths = Array.from({ length: 12 }, (_, i) => ({
+  id: `B-${String(i + 1).padStart(2, "0")}`,
+  name: `บูธ B-${String(i + 1).padStart(2, "0")}`,
+  section: ["A", "B", "C"][Math.floor(i / 4)],
+  pos_x: (i % 4 - 1.5) * 3.5,
+  pos_z: (Math.floor(i / 4) - 1) * 4,
+  rotation: 0,
+  status: "available",
+  price: 8000 + (i % 3) * 1500
+}));
+
+let bookings = [];
+let selectedId = "B-01";
+let isAdmin = false;
+let scene, camera, renderer, controls, raycaster;
+let boothGroups = [];
+
+const $ = id => document.getElementById(id);
+
+function money(value) {
+  return new Intl.NumberFormat("th-TH").format(Number(value) || 0) + " ฿";
+}
+
+function statusText(status) {
+  return {
+    available: "ว่าง",
+    pending: "รอตรวจสอบ",
+    booked: "จองแล้ว",
+    confirmed: "ยืนยันแล้ว",
+    cancelled: "ยกเลิก"
+  }[status] || status;
+}
+
+function normalizeStatus(status) {
+  if (status === "confirmed") return "booked";
+  if (status === "cancelled") return "available";
+  if (["available", "pending", "booked"].includes(status)) return status;
+  return "available";
+}
+
+function message(id, text, type = "") {
+  $(id).textContent = text;
+  $(id).className = "message " + type;
+}
+
+function escapeHTML(value) {
+  return String(value ?? "").replace(/[&<>"']/g, ch => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;",
+    '"': "&quot;", "'": "&#39;"
+  }[ch]));
+}
+
+// ===== สร้างแผนผัง 3D =====
+function init3D() {
+  const host = $("scene");
+
+  if (!window.THREE || !THREE.OrbitControls) {
+    host.textContent = "โหลดระบบ 3D ไม่สำเร็จ กรุณาตรวจสอบอินเทอร์เน็ต";
+    return;
+  }
+
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color("#101a2d");
+
+  camera = new THREE.PerspectiveCamera(
+    45, host.clientWidth / host.clientHeight, 0.1, 100
+  );
+  camera.position.set(10, 12, 15);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(host.clientWidth, host.clientHeight);
+  host.appendChild(renderer.domElement);
+
+  controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.target.set(0, 0, 0);
+
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x38445a, 2));
+
+  const light = new THREE.DirectionalLight(0xffffff, 2);
+  light.position.set(8, 12, 8);
+  scene.add(light);
+
+  const floor = new THREE.Mesh(
+    new THREE.PlaneGeometry(19, 15),
+    new THREE.MeshStandardMaterial({ color: "#1b2942" })
+  );
+  floor.rotation.x = -Math.PI / 2;
+  floor.position.y = -0.12;
+  scene.add(floor);
+
+  const grid = new THREE.GridHelper(19, 19, "#52617b", "#2c3a55");
+  grid.position.y = -0.1;
+  scene.add(grid);
+
+  raycaster = new THREE.Raycaster();
+  renderer.domElement.addEventListener("click", clickBooth);
+
+  window.addEventListener("resize", () => {
+    if (!renderer || !host.clientWidth) return;
+    camera.aspect = host.clientWidth / host.clientHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(host.clientWidth, host.clientHeight);
+  });
+
+  rebuild3D();
+
+  function animate() {
+    requestAnimationFrame(animate);
+    controls.update();
+    renderer.render(scene, camera);
+  }
+  animate();
+}
+
+function boothColor(status) {
+  if (status === "pending") return "#ffb84d";
+  if (status === "booked" || status === "confirmed") return "#fb7185";
+  return "#31c48d";
+}
+
+function rebuild3D() {
+  if (!scene) return;
+
+  boothGroups.forEach(group => scene.remove(group));
+  boothGroups = [];
+
+  booths.forEach(booth => {
+    const group = new THREE.Group();
+    group.position.set(booth.pos_x || 0, 0, booth.pos_z || 0);
+    group.rotation.y = (Number(booth.rotation) || 0) * Math.PI / 180;
+    group.userData.boothId = booth.id;
+
+    const base = new THREE.Mesh(
+      new THREE.BoxGeometry(2.5, 0.2, 2.5),
+      new THREE.MeshStandardMaterial({ color: boothColor(booth.status) })
+    );
+    base.position.y = 0.1;
+    group.add(base);
+
+    const back = new THREE.Mesh(
+      new THREE.BoxGeometry(2.5, 1.3, 0.12),
+      new THREE.MeshStandardMaterial({ color: "#e3eaf5" })
+    );
+    back.position.set(0, 0.8, -1.15);
+    group.add(back);
+
+    const side = new THREE.Mesh(
+      new THREE.BoxGeometry(0.12, 1.3, 2.3),
+      new THREE.MeshStandardMaterial({ color: "#aab9d0" })
+    );
+    side.position.set(-1.15, 0.8, 0);
+    group.add(side);
+
+    // ป้ายชื่อบูธ
+    const canvas = document.createElement("canvas");
+    canvas.width = 256;
+    canvas.height = 96;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#101a2d";
+    ctx.fillRect(0, 0, 256, 96);
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 44px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText(booth.id, 128, 62);
+
+    const label = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.5, 0.55),
+      new THREE.MeshBasicMaterial({
+        map: new THREE.CanvasTexture(canvas),
+        side: THREE.DoubleSide
+      })
+    );
+    label.position.set(0, 1.35, -1.08);
+    group.add(label);
+
+    group.traverse(obj => {
+      obj.userData.boothId = booth.id;
+    });
+
+    scene.add(group);
+    boothGroups.push(group);
+  });
+
+  highlightSelected();
+}
+
+function clickBooth(event) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  const mouse = new THREE.Vector2(
+    ((event.clientX - rect.left) / rect.width) * 2 - 1,
+    -((event.clientY - rect.top) / rect.height) * 2 + 1
+  );
+
+  raycaster.setFromCamera(mouse, camera);
+  const hits = raycaster.intersectObjects(boothGroups, true);
+
+  if (hits.length) {
+    let object = hits[0].object;
+    while (object && !object.userData.boothId) object = object.parent;
+    if (object) selectBooth(object.userData.boothId);
+  }
+}
+
+function highlightSelected() {
+  boothGroups.forEach(group => {
+    const booth = booths.find(b => b.id === group.userData.boothId);
+    if (!booth) return;
+
+    group.children[0].material.color.set(
+      booth.id === selectedId ? "#ff9f43" : boothColor(booth.status)
+    );
+  });
+}
+
+// ===== แสดงรายการบูธ =====
+function renderBoothCards() {
+  const root = $("boothCards");
+  root.innerHTML = "";
+
+  booths.forEach(booth => {
+    const button = document.createElement("button");
+    button.className = "booth-card" +
+      (booth.id === selectedId ? " selected" : "");
+
+    button.innerHTML =
+      `<strong>${escapeHTML(booth.id)} · ${money(booth.price)}</strong>` +
+      `<small>โซน ${escapeHTML(booth.section)} · ${statusText(booth.status)}</small>`;
+
+    button.onclick = () => selectBooth(booth.id);
+    root.appendChild(button);
+  });
+
+  $("boothCount").textContent = booths.length + " บูธ";
+}
+
+function selectBooth(id) {
+  const booth = booths.find(b => b.id === id);
+  if (!booth) return;
+
+  selectedId = id;
+  $("boothCode").textContent = booth.id;
+  $("boothName").textContent = booth.name;
+  $("boothPrice").textContent = money(booth.price);
+  $("boothSection").textContent = booth.section;
+  $("boothStatus").textContent = statusText(booth.status);
+
+  $("bookBtn").disabled = booth.status !== "available";
+  $("bookBtn").textContent = booth.status === "available"
+    ? "ส่งคำขอจองบูธ"
+    : "บูธนี้ยังไม่ว่าง";
+
+  $("boothStatus").style.background = booth.status === "available"
+    ? "#123d34" : booth.status === "pending" ? "#4a3518" : "#4b2430";
+
+  renderBoothCards();
+  highlightSelected();
+
+  $("editName").value = booth.name;
+  $("editSection").value = booth.section;
+  $("editPrice").value = booth.price;
+  $("editStatus").value = booth.status;
+}
+
+// ===== โหลดข้อมูลจาก Supabase =====
+async function loadBooths() {
+  if (!db) {
+    $("connectionStatus").textContent = "Demo Mode · ยังไม่เชื่อมต่อ Supabase";
+    return;
+  }
+
+  const { data, error } = await db.from("booths").select("*").order("id");
+
+  if (error) {
+    $("connectionStatus").textContent = "โหลดข้อมูลไม่สำเร็จ";
+    console.error(error);
+    return;
+  }
+
+  if (data && data.length) {
+    booths = data.map(b => ({ ...b, status: normalizeStatus(b.status) }));
+    rebuild3D();
+    renderBoothCards();
+    selectBooth(booths.some(b => b.id === selectedId)
+      ? selectedId : booths[0].id);
+  }
+
+  $("connectionStatus").textContent = "เชื่อมต่อ Supabase แล้ว";
+}
+
+// ===== ระบบจองบูธ =====
+$("bookingForm").addEventListener("submit", async event => {
+  event.preventDefault();
+
+  const booth = booths.find(b => b.id === selectedId);
+  if (!booth || booth.status !== "available") return;
+
+  const customer_name = $("customerName").value.trim();
+  const phone = $("customerPhone").value.trim();
+
+  if (!customer_name || !phone) return;
+
+  if (!db) {
+    message("bookingMessage",
+      "ยังไม่ได้เชื่อมต่อ Supabase จึงยังบันทึกการจองจริงไม่ได้",
+      "error");
+    return;
+  }
+
+  $("bookBtn").disabled = true;
+
+  const { error } = await db.from("bookings").insert({
+    booth_id: booth.id,
+    customer_name,
+    phone,
+    status: "pending"
+  });
+
+  if (error) {
+    message("bookingMessage",
+      error.code === "23505"
+        ? "บูธนี้มีคำขอจองแล้ว กรุณาเลือกบูธอื่น"
+        : "จองไม่สำเร็จ: " + error.message,
+      "error");
+    $("bookBtn").disabled = false;
+    return;
+  }
+
+  await db.from("booths")
+    .update({ status: "pending" })
+    .eq("id", booth.id);
+
+  booth.status = "pending";
+  rebuild3D();
+  selectBooth(booth.id);
+  $("bookingForm").reset();
+
+  message("bookingMessage",
+    "ส่งคำขอจองสำเร็จ รอผู้ดูแลตรวจสอบ",
+    "success");
+});
+
+// ===== ระบบ Admin =====
+$("adminToggle").onclick = () => {
+  if (isAdmin) {
+    $("adminPanel").classList.toggle("hidden");
+  } else {
+    $("loginPanel").classList.remove("hidden");
+  }
+};
+
+$("closeLogin").onclick = () =>
+  $("loginPanel").classList.add("hidden");
+
+$("loginForm").addEventListener("submit", async event => {
+  event.preventDefault();
+
+  if (!db) {
+    message("loginMessage", "กรุณาตั้งค่า Supabase URL และ Key ก่อน", "error");
+    return;
+  }
+
+  const { error } = await db.auth.signInWithPassword({
+    email: $("adminEmail").value.trim(),
+    password: $("adminPassword").value
+  });
+
+  if (error) {
+    message("loginMessage", "เข้าสู่ระบบไม่สำเร็จ: " + error.message, "error");
+    return;
+  }
+
+  const { data: allowed, error: adminError } = await db.rpc("is_admin");
+
+  if (adminError || allowed !== true) {
+    await db.auth.signOut();
+    message("loginMessage", "บัญชีนี้ยังไม่มีสิทธิ์ Admin", "error");
+    return;
+  }
+
+  isAdmin = true;
+  $("loginPanel").classList.add("hidden");
+  $("adminPanel").classList.remove("hidden");
+  $("adminToggle").textContent = "Admin Dashboard";
+
+  await refreshBookings();
+});
+
+$("logoutBtn").onclick = async () => {
+  if (db) await db.auth.signOut();
+  isAdmin = false;
+  $("adminPanel").classList.add("hidden");
+  $("adminToggle").textContent = "Admin Login";
+};
+
+$("editBoothForm").addEventListener("submit", async event => {
+  event.preventDefault();
+
+  if (!isAdmin || !db) {
+    message("adminMessage", "กรุณาเข้าสู่ระบบ Admin ก่อน", "error");
+    return;
+  }
+
+  const booth = booths.find(b => b.id === selectedId);
+  if (!booth) return;
+
+  const patch = {
+    name: $("editName").value.trim(),
+    section: $("editSection").value.trim(),
+    price: Number($("editPrice").value),
+    status: $("editStatus").value
+  };
+
+  const { error } = await db.from("booths")
+    .update(patch).eq("id", booth.id);
+
+  if (error) {
+    message("adminMessage", "บันทึกไม่สำเร็จ: " + error.message, "error");
+    return;
+  }
+
+  Object.assign(booth, patch);
+  rebuild3D();
+  selectBooth(booth.id);
+  message("adminMessage", "บันทึกข้อมูลบูธแล้ว", "success");
+});
+
+// ===== รายการจองสำหรับ Admin =====
+async function refreshBookings() {
+  if (!db || !isAdmin) return;
+
+  const { data, error } = await db.from("bookings")
+    .select("*").order("created_at", { ascending: false });
+
+  const body = $("bookingsTable");
+  body.innerHTML = "";
+
+  if (error) {
+    body.innerHTML =
+      `<tr><td colspan="4">${escapeHTML(error.message)}</td></tr>`;
+    return;
+  }
+
+  bookings = data || [];
+
+  if (!bookings.length) {
+    body.innerHTML = '<tr><td colspan="4">ยังไม่มีรายการจอง</td></tr>';
+    return;
+  }
+
+  bookings.forEach(booking => {
+    const row = document.createElement("tr");
+    row.innerHTML =
+      `<td>${escapeHTML(booking.booth_id)}</td>` +
+      `<td>${escapeHTML(booking.customer_name)}</td>` +
+      `<td>${escapeHTML(booking.phone)}</td>` +
+      `<td>${statusText(booking.status)}</td>`;
+    body.appendChild(row);
+  });
+}
+
+// ===== เริ่มทำงาน =====
+init3D();
+renderBoothCards();
+selectBooth(selectedId);
+loadBooths();
+
+async function restoreAdminSession() {
+  if (!db) return;
+
+  const { data: { session } } = await db.auth.getSession();
+  if (!session) return;
+
+  const { data } = await db.rpc("is_admin");
+
+  if (data === true) {
+    isAdmin = true;
+    $("adminToggle").textContent = "Admin Dashboard";
+    $("adminPanel").classList.remove("hidden");
+    refreshBookings();
+  }
+}
+
+restoreAdminSession();
+</script>
+
 </body>
 </html>
