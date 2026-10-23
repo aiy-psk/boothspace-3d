@@ -733,8 +733,7 @@ $("bookingForm").addEventListener("submit", async event => {
     "success");
 });
 
-
- // ===== ระบบ Admin =====
+// ===== ระบบ Admin =====
 $("adminToggle").onclick = () => {
   if (isAdmin) {
     $("adminPanel").classList.toggle("hidden");
@@ -743,83 +742,64 @@ $("adminToggle").onclick = () => {
   }
 };
 
-$("closeLogin").onclick = () => {
+$("closeLogin").onclick = () =>
   $("loginPanel").classList.add("hidden");
-};
 
-$("loginForm").addEventListener("submit", async (event) => {
+$("loginForm").addEventListener("submit", async event => {
   event.preventDefault();
 
   if (!db) {
-    message(
-      "loginMessage",
-      "กรุณาตั้งค่า Supabase URL และ Key ก่อน",
-      "error"
-    );
+    message("loginMessage", "กรุณาตั้งค่า Supabase URL และ Key ก่อน", "error");
     return;
   }
 
-  const email = $("adminEmail").value.trim();
-  const password = $("adminPassword").value;
+  const { error } = await db.auth.signInWithPassword({
+    email: $("aiygaming830@gmail.com").value.trim(),
+    password: $("215N0120/23").value
+  });
 
-  try {
-    const { error } = await db.auth.signInWithPassword({
-      email,
-      password
-    });
-
-    if (error) {
-      message(
-        "loginMessage",
-        "เข้าสู่ระบบไม่สำเร็จ: " + error.message,
-        "error"
-      );
-      return;
-    }
-
-    const { data: allowed, error: adminError } =
-      await db.rpc("is_admin");
-
-    if (adminError) {
-      await db.auth.signOut();
-      message(
-        "loginMessage",
-        "ตรวจสอบสิทธิ์ Admin ไม่สำเร็จ: " + adminError.message,
-        "error"
-      );
-      return;
-    }
-
-    if (allowed !== true) {
-      await db.auth.signOut();
-      message(
-        "loginMessage",
-        "บัญชีนี้ยังไม่มีสิทธิ์ Admin",
-        "error"
-      );
-      return;
-    }
-
-    isAdmin = true;
-    $("loginPanel").classList.add("hidden");
-    $("adminPanel").classList.remove("hidden");
-    message("loginMessage", "เข้าสู่ระบบ Admin สำเร็จ", "success");
-
-    // โหลดข้อมูล Admin ด้วยฟังก์ชันเดิมของเว็บไซต์ หากมี
-    if (typeof loadBooths === "function") {
-      await loadBooths();
-    }
-    if (typeof refreshBookings === "function") {
-      await refreshBookings();
-    }
-  } catch (err) {
-    message(
-      "loginMessage",
-      "เกิดข้อผิดพลาด: " + (err.message || err),
-      "error"
-    );
+  if (error) {
+    message("loginMessage", "เข้าสู่ระบบไม่สำเร็จ: " + error.message, "error");
+    return;
   }
-});
+
+  const { data: allowed, error: adminError } = await db.rpc("is_admin");
+
+  if (adminError || allowed !== true) {
+    await db.auth.signOut();
+    message("loginMessage", "บัญชีนี้ยังไม่มีสิทธิ์ Admin", "error");
+    return;
+  }
+
+
+
+async function adminLogin() {
+  const email = document.getElementById("adminEmail").value.trim();
+  const password = document.getElementById("adminPassword").value;
+
+  const { data, error } = await db.auth.signInWithPassword({
+    email,
+    password
+  });
+
+  if (error) {
+    alert("Login ไม่สำเร็จ: " + error.message);
+    return;
+  }
+
+  const { data: isAdmin, error: adminError } =
+    await db.rpc("is_admin");
+
+  if (adminError) {
+    alert("ตรวจสอบสิทธิ์ Admin ไม่สำเร็จ: " + adminError.message);
+    return;
+  }
+
+  if (!isAdmin) {
+    alert("บัญชีนี้ไม่มีสิทธิ์ Admin");
+    await db.auth.signOut();
+    return;
+  }
 
 
   alert("Login Admin สำเร็จ");
