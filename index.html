@@ -753,6 +753,23 @@ $("loginForm").addEventListener("submit", async event => {
     return;
   }
 
+
+
+  
+console.log("Supabase URL:", db.supabaseUrl);
+console.log("Login email:", $("adminEmail").value.trim());
+
+const { error } = await db.auth.signInWithPassword({
+  email: $("adminEmail").value.trim(),
+  password: $("adminPassword").value
+
+
+
+  
+  
+});
+
+console.log("Login error:", error?.message ?? "none");
   const { error } = await db.auth.signInWithPassword({
     email: $("adminEmail").value.trim(),
     password: $("adminPassword").value
